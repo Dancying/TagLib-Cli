@@ -1,0 +1,6 @@
+/bin/
+/build/
+/tests/temp_*/
+/tests/*.html
+/tests/*.json
+*.swp

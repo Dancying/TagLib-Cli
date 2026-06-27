@@ -1,0 +1,94 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:latest
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Initialize DNF Cache Directory
+      run: mkdir -p /var/cache/dnf
+
+    - name: Cache DNF Packages
+      uses: actions/cache@v4
+      with:
+        path: /var/cache/dnf
+        key: ${{ runner.os }}-dnf-${{ hashFiles('**/CMakeLists.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-dnf-
+
+    - name: Install dependencies
+      run: |
+        dnf install -y --setopt=keepcache=1 cmake gcc-c++ make taglib-devel tar
+
+    - name: Check if Tag Release
+      id: check_tag
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const ref = context.ref;
+          if (ref.startsWith('refs/tags/v')) {
+            const version = ref.replace('refs/tags/v', '');
+            core.exportVariable('VERSION', version);
+            core.setOutput('is_release', 'true');
+          } else {
+            core.exportVariable('VERSION', '1.0.0');
+            core.setOutput('is_release', 'false');
+          }
+
+    - name: Get Architecture
+      id: get_arch
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const arch = require('os').arch();
+          const mapping = { 'x64': 'x86_64', 'arm64': 'aarch64' };
+          core.exportVariable('ARCH', mapping[arch] || arch);
+
+    - name: Configure CMake
+      run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DPROJECT_VERSION=${{ env.VERSION }}
+
+    - name: Build project
+      run: cmake --build build --config Release
+
+    - name: Package Release with Shared Libs
+      if: steps.check_tag.outputs.is_release == 'true'
+      run: |
+        mkdir -p pack_shared/bin
+        mkdir -p pack_shared/lib
+        cp bin/taglib-cli pack_shared/bin/
+        cp /usr/lib64/libtag.so* pack_shared/lib/ 2>/dev/null || cp /usr/lib/libtag.so* pack_shared/lib/
+        tar -czvf taglib-cli-linux-${{ env.ARCH }}-${{ env.VERSION }}-with-libs.tar.gz -C pack_shared bin lib
+
+    - name: Package Release without Shared Libs
+      if: steps.check_tag.outputs.is_release == 'true'
+      run: |
+        mkdir -p pack_standalone/bin
+        cp bin/taglib-cli pack_standalone/bin/
+        tar -czvf taglib-cli-linux-${{ env.ARCH }}-${{ env.VERSION }}.tar.gz -C pack_standalone bin
+
+    - name: Create GitHub Release and Upload Artifacts
+      if: steps.check_tag.outputs.is_release == 'true'
+      uses: softprops/action-gh-release@v2
+      with:
+        files: |
+          taglib-cli-linux-${{ env.ARCH }}-${{ env.VERSION }}-with-libs.tar.gz
+          taglib-cli-linux-${{ env.ARCH }}-${{ env.VERSION }}.tar.gz
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
